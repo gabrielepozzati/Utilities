@@ -3,7 +3,7 @@ import os.path
 import sys
 import Bio
 import time
-import numpy
+import numpy as np
 import subprocess
 from Bio.PDB.PDBParser import PDBParser
 from Bio.PDB.PDBIO import PDBIO
@@ -45,7 +45,7 @@ def derive_assembly(pdbpath):
     rotation = []
     translation = []
     matrixgroup = []
-    coordinates = []
+    coordinates = {}
     rototranslations = {}
     chainlist = ''
     for line in open(pdbpath, 'r'):
@@ -86,7 +86,10 @@ def derive_assembly(pdbpath):
                     translation = []
                     rotation = []
 
-        if line.startswith('ATOM') or line.startswith('TER'): coordinates.append(line)
+        
+        if line.startswith('ATOM') or line.startswith('TER'): 
+            coordinates[line[21]] = coordinates.get(line[21], [])
+            coordinates[line[21]].append(line)
 
     rt_structures = []
 
@@ -94,28 +97,48 @@ def derive_assembly(pdbpath):
     print (pdbpath)
     print (rototranslations)
 
+    tmppath = pdbpath.split('/')[-1]+'tmpfile.pdb'
+    original_structure = p.get_structure('', pdbpath)
     identity_rtmatrix = [[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 0.0, 0.0]]
 
-    outfile = open(pdbpath+'.ass'+str(assembly),'a')
     for assembly in rototranslations:
         for rtmatrix in rototranslations[assembly]:
-            if rtmatrix[1] == identity_rtmatrix: continue
-            for chain in rtmatrix[0]:
-                
-#            write_assembly(outfile, rtmatrix, coordinates)
-#
-#
-#def get_rtstructure(outfile, matrix, coordinates):
-#
-#    rotation_matrix = np.array(matrix[1][0])
-#    translation_matrix = np.array(matrix[1][1])
-#
-#    for line in coordinates:
-#        if not line.startswith('TER'):
-#            if line[21] not in matrix[0]: continue
-#            atom_coordinates = np.array([float(line[30:38]), float(line[38:46]), float(line[46:54])])
-#
-#            outfile.write(line[:30])
+            if rtmatrix[1] == identity_rtmatrix:
+                for chain in rtmatrix[0]:
+                    rt_structures.append(original_structure[0][chain])
+                    continue
+            else:
+                for chain in rtmatrix[0]:
+                    structure = get_rtstructure(tmppath, rtmatrix[1], coordinates[chain])
+                    rt_structures.append(structure[0][chain])
+
+    return rt_structures
+
+
+def get_rtstructure(path, matrix, chain):
+
+    outfile = open(path,'a')
+    rotation_matrix = np.array(matrix[0])
+    translation_matrix = np.array(matrix[1])
+
+    for line in chain:
+        if line.startswith('TER'): 
+            outfile.write(line)
+            continue
+        atom_coordinates = np.array([float(line[30:38].strip()), 
+                                     float(line[38:46].strip()), 
+                                     float(line[46:54].strip())])
+        rtcoords = np.add(rotation_matrix.dot(atom_coordinates), translation_matrix)
+        rtX = str(np.around(rtcoords[0], decimals=3))
+        rtY = str(np.around(rtcoords[1], decimals=3))
+        rtZ = str(np.around(rtcoords[2], decimals=3))
+        while len(rtX) < 8: rtX = ' '+rtX
+        while len(rtY) < 8: rtY = ' '+rtY
+        while len(rtZ) < 8: rtZ = ' '+rtZ
+        outfile.write(line[:30]+rtX+rtY+rtZ+line[54:])
+    outfile.close()
+
+    return p.get_structure('', path)
         
 
 def extinterface(ichain1, ichain2):
@@ -317,23 +340,22 @@ if mode == 'linkedpair':
                 longestchain = chaindict1[pdb][0]+'-'+chaindict2[pdb][0]
                 longestpdb = pdb
 
-
         if len(longestchain.split('-')) < 2: continue
         chains1 = longestchain.split('-')[0]
         chains2 = longestchain.split('-')[1]
 
 
         if os.path.exists(pdbdb_path+'/'+longestpdb[1:3].lower()+'/'+'pdb'+longestpdb.lower()+'.ent'):
-            structure = p.get_structure('', pdbdb_path+'/'+longestpdb[1:3].lower()+'/'+'pdb'+longestpdb.lower()+'.ent')
             reference_path = pdbdb_path+'/'+longestpdb[1:3].lower()+'/'+'pdb'+longestpdb.lower()+'.ent'
         else:
             subprocess.run('wget https://files.rcsb.org/download/'+longestpdb+'.pdb', shell=True)
-            if os.path.exists(longestpdb+'.pdb'): 
-                structure = p.get_structure('', longestpdb+'.pdb')
-                reference_path = longestpdb+'.pdb'
+            if os.path.exists(longestpdb+'.pdb'): reference_path = longestpdb+'.pdb'
             else: continue
 
-        derive_assembly(reference_path)   
+        chain_list = derive_assembly(reference_path)   
+        for chain in chain_list: 
+            print (chain.get_id())
+        continue
 
         m = 0
         maxlength = 0
