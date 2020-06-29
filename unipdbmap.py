@@ -5,6 +5,7 @@ import Bio
 import time
 import numpy as np
 import subprocess
+from Bio.PDB import StructureBuilder as SB
 from Bio.PDB.PDBParser import PDBParser
 from Bio.PDB.PDBIO import PDBIO
 from Bio.PDB.PDBIO import Select
@@ -40,7 +41,7 @@ def get_pdbchains(uniprotcode):
         print ("Unavailable data on UniprotKB!")
         return pdblist, chaindic
 
-def derive_assembly(pdbpath):
+def derive_assembly(pdbpath, allowed_chains):
 
     rotation = []
     translation = []
@@ -93,10 +94,8 @@ def derive_assembly(pdbpath):
 
     rt_structures = []
 
-
-    print (pdbpath)
-    print (rototranslations)
-
+    #print (pdbpath)
+    #print (rototranslations)
     tmppath = pdbpath.split('/')[-1]+'tmpfile.pdb'
     original_structure = p.get_structure('', pdbpath)
     identity_rtmatrix = [[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], [0.0, 0.0, 0.0]]
@@ -105,19 +104,20 @@ def derive_assembly(pdbpath):
         for rtmatrix in rototranslations[assembly]:
             if rtmatrix[1] == identity_rtmatrix:
                 for chain in rtmatrix[0]:
+                    if chain not in allowed_chains: continue
                     rt_structures.append(original_structure[0][chain])
                     continue
             else:
                 for chain in rtmatrix[0]:
                     structure = get_rtstructure(tmppath, rtmatrix[1], coordinates[chain])
                     rt_structures.append(structure[0][chain])
+                    subprocess.run('rm '+tmppath, shell=True)
 
     return rt_structures
 
-
 def get_rtstructure(path, matrix, chain):
 
-    outfile = open(path,'a')
+    outfile = open(path,'w')
     rotation_matrix = np.array(matrix[0])
     translation_matrix = np.array(matrix[1])
 
@@ -138,8 +138,7 @@ def get_rtstructure(path, matrix, chain):
         outfile.write(line[:30]+rtX+rtY+rtZ+line[54:])
     outfile.close()
 
-    return p.get_structure('', path)
-        
+    return p.get_structure('', path)        
 
 def extinterface(ichain1, ichain2):
 
@@ -159,6 +158,7 @@ def extinterface(ichain1, ichain2):
     return int_res
 
 def model_chain_select(structure, targetchain):
+    chainhit = None
 
     for model in structure:
         m = model.get_id()
@@ -220,28 +220,43 @@ except:
     time.sleep(5)
 
 if mode == 'single':
+    outfile = open('largestructures','w')
     for code in open(sys.argv[1],'r'):
-        pdblist, chaindict = get_pdbchains(code)
+        pdblist, chaindict = get_pdbchains(code.rstrip())
+        
+        if len(pdblist) == 0: 
+            print ('No PDB found!')
+            continue
 
         maxlength = 0 
         longestpdb = ''
         longestchain = ''
         for pdb in pdblist:
+            if chaindict[pdb][1] > maxlength:
                 maxlength = chaindict[pdb][1]
                 longestchain = chaindict[pdb][0]
                 longestpdb = pdb
-
-        try: structure = p.get_structure('', pdbdb_path+'/'+longestpdb[1:3].lower()+'/'+'pdb'+longestpdb.lower()+'.ent')
-        except: 
+        
+        if os.path.exists(pdbdb_path+'/'+longestpdb[1:3].lower()+'/'+'pdb'+longestpdb.lower()+'.ent'): 
+            structure = p.get_structure('', pdbdb_path+'/'+longestpdb[1:3].lower()+'/'+'pdb'+longestpdb.lower()+'.ent')
+        else:
             subprocess.run('wget https://files.rcsb.org/download/'+longestpdb+'.pdb', shell=True)
             if os.path.exists(longestpdb+'.pdb'): structure = p.get_structure('', longestpdb+'.pdb')
-            else: continue
+            else:
+                outfile.write(code+'_'+longestpdb+'_'+longestchain.split('/')[0]+'\n')
+                continue
+        continue
 
         m, accept = model_chain_select(structure, longestchain[0]) 
+        if accept == None: continue
+
+        print ('Writing! PDB: '+longestpdb+' Length: '+str(maxlength)+'('+longestchain+')')
 
         io.set_structure(structure)
         io.save(outpath+code.rstrip()+'_'+longestpdb+'_'+accept+'.pdb', 
                 ChainSelect())
+    outfile.close()
+
 
 if mode == 'pair':
     
@@ -322,11 +337,12 @@ if mode == 'pair':
 if mode == 'linkedpair':
     
     for codecouple in open(sys.argv[1],'r'):
+        print ('\n\n\n'+codecouple.rstrip())
         code1 = codecouple.split('_')[0]
         code2 = codecouple.split('_')[1].rstrip()
         pdblist1, chaindict1 = get_pdbchains(code1)
         pdblist2, chaindict2 = get_pdbchains(code2)
- 
+
         pdblist1=set(pdblist1)
         pdblist2=set(pdblist2)
         commonpdb = list(pdblist1.intersection(pdblist2))
@@ -344,7 +360,7 @@ if mode == 'linkedpair':
         chains1 = longestchain.split('-')[0]
         chains2 = longestchain.split('-')[1]
 
-
+        print ('PDB: '+longestpdb+' Length: '+str(maxlength)+'('+longestchain+')')
         if os.path.exists(pdbdb_path+'/'+longestpdb[1:3].lower()+'/'+'pdb'+longestpdb.lower()+'.ent'):
             reference_path = pdbdb_path+'/'+longestpdb[1:3].lower()+'/'+'pdb'+longestpdb.lower()+'.ent'
         else:
@@ -352,42 +368,49 @@ if mode == 'linkedpair':
             if os.path.exists(longestpdb+'.pdb'): reference_path = longestpdb+'.pdb'
             else: continue
 
-        chain_list = derive_assembly(reference_path)   
-        for chain in chain_list: 
-            print (chain.get_id())
-        continue
+        #print ('chain1:', chains1.split('/'), 'chain2:',chains2.split('/') )
+        chain_list1 = derive_assembly(reference_path, chains1.split('/'))
+        chain_list2 = derive_assembly(reference_path, chains2.split('/'))
+        #for chain in chain_list: 
+        #    print (chain.get_id())
+        #continue
 
-        m = 0
         maxlength = 0
-        maxinterface = ''
-        for c1 in chains1.split('/'):
-            for c2 in chains2.split('/'):
-                if c1 != c2:
-                    int_residues1 = extinterface(structure[m][c1], structure[m][c2])
-                    if len(int_residues1) < 5: continue
-                    int_residues2 = extinterface(structure[m][c2], structure[m][c1])
-                    if len(int_residues2) < 5: continue
-                    int_residues = int_residues1 + int_residues2
-                    if len(int_residues) > maxlength: 
-                        maxlength = len(int_residues)
-                        maxinterface = c1+c2
-    
-        if len(maxinterface)<2: continue
-    
-        print ('Wrinting '+outpath+codecouple.rstrip()+'_'+longestpdb+'_'+maxinterface+'....')
-        lengthchain1 = len(structure[m][maxinterface[0]])
-        lengthchain2 = len(structure[m][maxinterface[1]])
-        if lengthchain1 < lengthchain2: maxinterface = maxinterface[1]+maxinterface[0]
+        maxinterface1 = ''
+        maxinterface2 = ''
+        for c1 in range(len(chain_list1)):
+            for c2 in range(len(chain_list2)):
 
-        io.set_structure(structure)
+                firstatom1 = list(list(chain_list1[c1])[0])[0].get_coord()
+                firstatom2 = list(list(chain_list2[c2])[0])[0].get_coord()
+                if np.all(firstatom1==firstatom2): continue
 
-        accept = maxinterface[0]
-        io.save(outpath+codecouple.rstrip()+'_'+longestpdb+'_'+maxinterface+'_u1.pdb', 
-                ChainSelect())
+                int_residues1 = extinterface(chain_list1[c1], chain_list2[c2])
+                if len(int_residues1) < 5: continue
+                int_residues2 = extinterface(chain_list2[c2], chain_list1[c1])
+                if len(int_residues2) < 5: continue
+                int_residues = int_residues1 + int_residues2
+                if len(int_residues) > maxlength: 
+                    maxlength = len(int_residues)
+                    maxinterface1 = chain_list1[c1]
+                    maxinterface2 = chain_list2[c2]
 
-        accept = maxinterface[1]
-        io.save(outpath+codecouple.rstrip()+'_'+longestpdb+'_'+maxinterface+'_u2.pdb', 
-                ChainSelect())
+        if maxinterface1 == '' or maxinterface2 == '': continue
+        chaincouple = maxinterface1.get_id()+maxinterface2.get_id()
+
+        print ('Wrinting '+outpath+codecouple.rstrip()+'_'+longestpdb+'_'+chaincouple+'....')
+        lengthchain1 = len(maxinterface1)
+        lengthchain2 = len(maxinterface2)
+        if lengthchain1 < lengthchain2:
+            swapinterface = maxinterface2
+            maxinterface2 = maxinterface1
+            maxinterface1 = swapinterface
+
+        io.set_structure(maxinterface1)
+        io.save(outpath+codecouple.rstrip()+'_'+longestpdb+'_'+chaincouple+'_u1.pdb')
+
+        io.set_structure(maxinterface2)
+        io.save(outpath+codecouple.rstrip()+'_'+longestpdb+'_'+chaincouple+'_u2.pdb')
     
         if os.path.exists(longestpdb+'.pdb'): subprocess.run('rm '+longestpdb+'.pdb', shell=True)
 
